@@ -1,0 +1,28 @@
+﻿# Build outputs
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+build/bin/
+
+# Go artifacts
+*.test
+*.out
+coverage.out
+
+# Frontend artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/package.json.md5
+
+# Local runtime data
+logs/
+reports/
+netsentry.json
+
+# IDE / OS
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

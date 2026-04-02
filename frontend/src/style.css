@@ -1,0 +1,31 @@
+﻿:root {
+  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color: #192126;
+  background:
+    radial-gradient(circle at top left, rgba(202, 167, 110, 0.25), transparent 28%),
+    linear-gradient(160deg, #f6f1e7 0%, #e6ecef 45%, #d6e2d6 100%);
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+  width: 100%;
+}
+
+body {
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
