@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"embed"
@@ -15,11 +15,11 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:  "NetSentry",
-		Width:  1120,
-		Height: 820,
-		MinWidth: 960,
-		MinHeight: 720,
+		Title:     "NetSentry",
+		Width:     1180,
+		Height:    780,
+		MinWidth:  820,
+		MinHeight: 600,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"netsentry/internal/monitor"
+	"netsentry/internal/storage"
 )
 
 // AppConfig stores user-editable settings in a JSON file so the GUI can keep
@@ -63,7 +64,7 @@ func Save(path string, cfg AppConfig) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return storage.WriteFile(path, data)
 }
 
 func (c *AppConfig) ApplyDefaults() {
@@ -124,6 +125,13 @@ func (c AppConfig) ToMonitorConfig() (monitor.Config, error) {
 	}
 	if timeout < 200*time.Millisecond {
 		return monitor.Config{}, fmt.Errorf("timeout must be at least 200ms")
+	}
+	// IcmpSendEcho accepts a DWORD millisecond timeout; avoid silently wrapping it.
+	if timeout > time.Duration(^uint32(0))*time.Millisecond {
+		return monitor.Config{}, fmt.Errorf("timeout exceeds the Windows ICMP limit")
+	}
+	if summaryEvery < time.Second {
+		return monitor.Config{}, fmt.Errorf("summary-every must be at least 1s")
 	}
 	if reportEvery < time.Second {
 		return monitor.Config{}, fmt.Errorf("report-every must be at least 1s")

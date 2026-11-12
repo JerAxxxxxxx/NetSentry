@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -19,10 +19,8 @@ import (
 )
 
 type monitorSession struct {
-	cancel   context.CancelFunc
-	client   *icmp.Client
-	logger   *logging.EventLogger
-	reporter *report.DailyReporter
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 type ProbeEvent struct {
@@ -42,6 +40,7 @@ type ProbeEvent struct {
 	Errors       int     `json:"errors"`
 	MaxTimeouts  int     `json:"maxTimeouts"`
 	CurrentIPSet string  `json:"currentIPSet"`
+	ReportPath   string  `json:"reportPath"`
 }
 
 type SummaryEvent struct {
@@ -62,6 +61,7 @@ type App struct {
 	configPath string
 	mu         sync.Mutex
 	session    *monitorSession
+	closed     bool
 }
 
 func NewApp() *App {
@@ -73,7 +73,16 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) shutdown(context.Context) {
-	a.StopMonitoring()
+	a.mu.Lock()
+	a.closed = true
+	session := a.session
+	a.mu.Unlock()
+	if session != nil {
+		session.cancel()
+		// Wails may exit as soon as this callback returns. Wait for the final
+		// report and handle cleanup before allowing the process to terminate.
+		<-session.done
+	}
 }
 
 func (a *App) GetConfig() (config.AppConfig, error) {
@@ -95,11 +104,22 @@ func (a *App) SaveConfig(cfg config.AppConfig) error {
 
 func (a *App) StartMonitoring(cfg config.AppConfig) error {
 	a.mu.Lock()
-	if a.session != nil {
+	if a.closed || a.session != nil {
 		a.mu.Unlock()
-		return fmt.Errorf("monitor is already running")
+		return fmt.Errorf("monitor is already running or the app is closing")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &monitorSession{cancel: cancel, done: make(chan struct{})}
+	// Reserve the session before I/O so concurrent starts cannot both succeed.
+	a.session = session
 	a.mu.Unlock()
+	started := false
+	defer func() {
+		if !started {
+			cancel()
+			a.finishSession(session)
+		}
+	}()
 
 	cfg.ApplyDefaults()
 	monitorCfg, err := cfg.ToMonitorConfig()
@@ -132,37 +152,62 @@ func (a *App) StartMonitoring(cfg config.AppConfig) error {
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	session := &monitorSession{cancel: cancel, client: client, logger: logger, reporter: reporter}
-
-	a.mu.Lock()
-	a.session = session
-	a.mu.Unlock()
-
-	wruntime.EventsEmit(a.ctx, "monitor:started", map[string]any{
+	a.emit("monitor:started", map[string]any{
 		"reportPath": reporter.Path(),
 	})
 
 	go func() {
-		defer logger.Close()
-		defer client.Close()
+		var finalStats model.MonitorStats
+		defer func() {
+			if err := logger.Close(); err != nil {
+				a.emit("monitor:error", err.Error())
+			}
+			if err := client.Close(); err != nil {
+				a.emit("monitor:error", err.Error())
+			}
+			session.cancel()
+			a.mu.Lock()
+			// Publish stopped before a new session can publish started.
+			a.emit("monitor:stopped", toSummaryEvent(finalStats))
+			a.session = nil
+			close(session.done)
+			a.mu.Unlock()
+		}()
 		monitor.Run(ctx, monitorCfg, client, logger, reporter, monitor.Hooks{
 			OnProbe: func(result model.ProbeResult, stats model.MonitorStats) {
-				wruntime.EventsEmit(a.ctx, "monitor:probe", toProbeEvent(result, stats))
+				event := toProbeEvent(result, stats)
+				event.ReportPath = reporter.Path()
+				a.emit("monitor:probe", event)
 			},
 			OnSummary: func(stats model.MonitorStats) {
-				wruntime.EventsEmit(a.ctx, "monitor:summary", toSummaryEvent(stats))
+				a.emit("monitor:summary", toSummaryEvent(stats))
 			},
 			OnStopped: func(stats model.MonitorStats) {
-				a.mu.Lock()
-				a.session = nil
-				a.mu.Unlock()
-				wruntime.EventsEmit(a.ctx, "monitor:stopped", toSummaryEvent(stats))
+				finalStats = stats
+			},
+			OnError: func(err error) {
+				a.emit("monitor:error", err.Error())
 			},
 		})
 	}()
 
+	started = true
 	return nil
+}
+
+func (a *App) finishSession(session *monitorSession) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.session == session {
+		a.session = nil
+	}
+	close(session.done)
+}
+
+func (a *App) emit(name string, data ...interface{}) {
+	if a.ctx != nil {
+		wruntime.EventsEmit(a.ctx, name, data...)
+	}
 }
 
 func (a *App) StopMonitoring() {
@@ -194,7 +239,12 @@ func (a *App) OpenPath(path string) error {
 		return err
 	}
 
-	return exec.Command("explorer", resolved).Start()
+	cmd := exec.Command("explorer", resolved)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 func toProbeEvent(result model.ProbeResult, stats model.MonitorStats) ProbeEvent {

@@ -83,26 +83,46 @@ func (c *Client) Close() error {
 }
 
 // Probe performs one IPv4 ICMP echo request and returns both RTT and the
-// application-observed total latency for the entire system call.
-func (c *Client) Probe(ctx context.Context, host string, timeout time.Duration) model.ProbeResult {
+// application-observed total latency, including DNS resolution. DNS and ICMP
+// share one timeout budget so a broken resolver cannot stall the monitor.
+func (c *Client) Probe(ctx context.Context, host string, timeout time.Duration) (result model.ProbeResult) {
 	now := time.Now()
+	defer func() { result.TotalLatency = time.Since(now) }()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	ip, err := resolveIPv4(ctx, host)
 	if err != nil {
-		return model.ProbeResult{
-			Time:         now,
-			Host:         host,
-			Status:       model.StatusError,
-			TotalLatency: 0,
-			Detail:       fmt.Sprintf("resolve failed: %v", err),
-			RawSummary:   "dns lookup failed",
+		status := model.StatusError
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			status = model.StatusTimeout
 		}
+		return model.ProbeResult{
+			Time:       now,
+			Host:       host,
+			Status:     status,
+			Detail:     fmt.Sprintf("resolve failed: %v", err),
+			RawSummary: "dns lookup failed",
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		status := model.StatusError
+		if errors.Is(err, context.DeadlineExceeded) {
+			status = model.StatusTimeout
+		}
+		return model.ProbeResult{Time: now, Host: host, IP: ip.String(), Status: status, Detail: err.Error()}
 	}
 
 	payload := []byte("NetSentry")
 	replyBuffer := make([]byte, int(unsafe.Sizeof(icmpEchoReply{}))+len(payload)+8)
 	ipAddr := binary.LittleEndian.Uint32(ip)
 
-	start := time.Now()
+	deadline, _ := ctx.Deadline()
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return model.ProbeResult{Time: now, Host: host, IP: ip.String(), Status: model.StatusTimeout, Detail: "probe deadline exceeded"}
+	}
+	// Round up to milliseconds so sub-millisecond budgets do not become zero.
+	timeoutMs := (remaining + time.Millisecond - 1) / time.Millisecond
 	r1, _, callErr := c.procSendEcho.Call(
 		uintptr(c.handle),
 		uintptr(ipAddr),
@@ -111,19 +131,20 @@ func (c *Client) Probe(ctx context.Context, host string, timeout time.Duration) 
 		0,
 		uintptr(unsafe.Pointer(&replyBuffer[0])),
 		uintptr(len(replyBuffer)),
-		uintptr(timeout.Milliseconds()),
+		uintptr(timeoutMs),
 	)
-	totalLatency := time.Since(start)
-
 	if ctx.Err() != nil {
+		status := model.StatusError
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			status = model.StatusTimeout
+		}
 		return model.ProbeResult{
-			Time:         now,
-			Host:         host,
-			IP:           ip.String(),
-			Status:       model.StatusError,
-			TotalLatency: totalLatency,
-			Detail:       ctx.Err().Error(),
-			RawSummary:   "probe canceled",
+			Time:       now,
+			Host:       host,
+			IP:         ip.String(),
+			Status:     status,
+			Detail:     ctx.Err().Error(),
+			RawSummary: ctx.Err().Error(),
 		}
 	}
 
@@ -134,13 +155,12 @@ func (c *Client) Probe(ctx context.Context, host string, timeout time.Duration) 
 		}
 
 		return model.ProbeResult{
-			Time:         now,
-			Host:         host,
-			IP:           ip.String(),
-			Status:       status,
-			TotalLatency: totalLatency,
-			Detail:       detail,
-			RawSummary:   detail,
+			Time:       now,
+			Host:       host,
+			IP:         ip.String(),
+			Status:     status,
+			Detail:     detail,
+			RawSummary: detail,
 		}
 	}
 
@@ -148,14 +168,13 @@ func (c *Client) Probe(ctx context.Context, host string, timeout time.Duration) 
 	status, detail := classifyStatus(reply.Status)
 
 	return model.ProbeResult{
-		Time:         now,
-		Host:         host,
-		IP:           intToIPv4(reply.Address),
-		Status:       status,
-		RTT:          time.Duration(reply.RoundTripTime) * time.Millisecond,
-		TotalLatency: totalLatency,
-		Detail:       detail,
-		RawSummary:   fmt.Sprintf("reply ip=%s status=%d rtt=%dms", intToIPv4(reply.Address), reply.Status, reply.RoundTripTime),
+		Time:       now,
+		Host:       host,
+		IP:         intToIPv4(reply.Address),
+		Status:     status,
+		RTT:        time.Duration(reply.RoundTripTime) * time.Millisecond,
+		Detail:     detail,
+		RawSummary: fmt.Sprintf("reply ip=%s status=%d rtt=%dms", intToIPv4(reply.Address), reply.Status, reply.RoundTripTime),
 	}
 }
 

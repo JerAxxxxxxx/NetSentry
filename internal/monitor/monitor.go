@@ -3,17 +3,25 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
-	"netsentry/internal/logging"
 	"netsentry/internal/model"
-	"netsentry/internal/report"
 )
 
 // Prober is implemented by the ICMP client and keeps the monitor package
 // decoupled from the Windows-specific probe implementation.
 type Prober interface {
 	Probe(ctx context.Context, host string, timeout time.Duration) model.ProbeResult
+}
+
+type EventLogger interface {
+	LogIssue(model.ProbeResult, int) error
+	LogRecovery(model.ProbeResult, int, time.Time) error
+}
+
+type DailyReporter interface {
+	Write(model.MonitorStats) error
 }
 
 type Config struct {
@@ -30,19 +38,47 @@ type Hooks struct {
 	OnProbe   func(result model.ProbeResult, stats model.MonitorStats)
 	OnSummary func(stats model.MonitorStats)
 	OnStopped func(stats model.MonitorStats)
+	OnError   func(err error)
 }
 
 // Run drives the monitoring loop, updates counters, prints live status,
 // and coordinates event logs plus the daily report file.
-func Run(ctx context.Context, cfg Config, prober Prober, logger *logging.EventLogger, reporter *report.DailyReporter, hooks Hooks) {
+func Run(ctx context.Context, cfg Config, prober Prober, logger EventLogger, reporter DailyReporter, hooks Hooks) {
 	stats := model.MonitorStats{
 		Host:        cfg.Host,
 		ResolvedIPs: make(map[string]int),
 	}
+	newDailyStats := func() model.MonitorStats {
+		return model.MonitorStats{Host: cfg.Host, ResolvedIPs: make(map[string]int)}
+	}
+	dailyStats := newDailyStats()
 
 	var lastStatus model.ProbeStatus
 	var hadLastStatus bool
 	var firstIssueAt time.Time
+	var dailyFirstIssueAt time.Time
+	var reportDay string
+
+	checkWrite := func(operation string, err error) {
+		if err == nil {
+			return
+		}
+		err = fmt.Errorf("%s: %w", operation, err)
+		if hooks.OnError != nil {
+			hooks.OnError(err)
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}
+	writeReport := func() {
+		if dailyStats.Total > 0 {
+			checkWrite("write daily report", reporter.Write(dailyStats))
+		}
+	}
+	defer func() {
+		writeReport()
+		emitStopped(hooks, stats)
+	}()
 
 	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
@@ -54,21 +90,42 @@ func Run(ctx context.Context, cfg Config, prober Prober, logger *logging.EventLo
 	defer reportTicker.Stop()
 
 	runProbe := func() {
+		if ctx.Err() != nil {
+			return
+		}
 		result := prober.Probe(ctx, cfg.Host, cfg.Timeout)
+		// Stopping during DNS or ICMP is not a failed network sample.
+		if ctx.Err() != nil {
+			return
+		}
+		day := result.Time.In(time.Local).Format("20060102")
+		newDay := day != reportDay
+		if newDay {
+			writeReport()
+			dailyStats = newDailyStats()
+			dailyFirstIssueAt = time.Time{}
+			reportDay = day
+		}
 		updateStats(&stats, result, &firstIssueAt)
-		emitProbe(hooks, result, stats)
+		updateStats(&dailyStats, result, &dailyFirstIssueAt)
 
 		if result.Status != model.StatusOK {
-			logger.LogIssue(result, stats.ConsecutiveIssues)
-			reporter.Write(stats)
+			checkWrite("write issue log", logger.LogIssue(result, stats.ConsecutiveIssues))
 		}
 
-		if hadLastStatus && lastStatus != model.StatusOK && result.Status == model.StatusOK {
-			logger.LogRecovery(result, stats.ConsecutiveIssues, firstIssueAt)
-			reporter.Write(stats)
+		recovered := hadLastStatus && lastStatus != model.StatusOK && result.Status == model.StatusOK
+		if recovered {
+			checkWrite("write recovery log", logger.LogRecovery(result, stats.ConsecutiveIssues, firstIssueAt))
 			stats.ConsecutiveIssues = 0
+			dailyStats.ConsecutiveIssues = 0
 			firstIssueAt = time.Time{}
+			dailyFirstIssueAt = time.Time{}
 		}
+		stateChanged := !hadLastStatus || result.Status != lastStatus
+		if newDay || stateChanged {
+			writeReport()
+		}
+		emitProbe(hooks, result, stats)
 
 		lastStatus = result.Status
 		hadLastStatus = true
@@ -79,15 +136,13 @@ func Run(ctx context.Context, cfg Config, prober Prober, logger *logging.EventLo
 	for {
 		select {
 		case <-ctx.Done():
-			reporter.Write(stats)
-			emitStopped(hooks, stats)
 			return
 		case <-ticker.C:
 			runProbe()
 		case <-summaryTicker.C:
 			emitSummary(hooks, stats)
 		case <-reportTicker.C:
-			reporter.Write(stats)
+			writeReport()
 		}
 	}
 }

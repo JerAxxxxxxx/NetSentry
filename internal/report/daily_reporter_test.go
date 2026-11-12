@@ -1,6 +1,8 @@
 package report
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,5 +40,39 @@ func TestBuildDailyReportContainsKeyMetrics(t *testing.T) {
 		if !strings.Contains(report, part) {
 			t.Fatalf("expected report to contain %q\nreport:\n%s", part, report)
 		}
+	}
+}
+
+func TestDailyReporterKeepsSeparateDays(t *testing.T) {
+	dir := t.TempDir()
+	reporter, err := NewDailyReporter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for day := 26; day <= 27; day++ {
+		stats := model.MonitorStats{
+			LastProbe: time.Date(2026, 3, day, 23, 0, 0, 0, time.Local),
+			Total:     day, Success: day,
+		}
+		if err := reporter.Write(stats); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, day := range []string{"26", "27"} {
+		path := filepath.Join(dir, "netsentry-report-202603"+day+".txt")
+		content, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(content), "Date: 2026-03-"+day) ||
+			!strings.Contains(string(content), "Total Probes: "+day) {
+			t.Fatalf("wrong daily report %s: %s, %v", path, content, err)
+		}
+	}
+	if filepath.Base(reporter.Path()) != "netsentry-report-20260327.txt" {
+		t.Fatal("active report path was not updated")
+	}
+	if err := reporter.Write(model.MonitorStats{LastProbe: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reporter.Write(model.MonitorStats{LastProbe: time.Now(), Total: 2}); err != nil {
+		t.Fatal("could not replace existing report:", err)
 	}
 }

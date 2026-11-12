@@ -40,7 +40,11 @@ NetSentry 把这个手工流程变成了一个可以长期后台运行的小工�
 - `rtt`：Windows ICMP API 返回的网络往返时间
 - `total latency`：应用完成一次探测的总耗时
 - `loss rate`：失败探测占比
-- `max consecutive timeouts`：当天出现的最长连续超时次数
+- `max consecutive timeouts`：界面显示本次监控的最长连续超时次数，日报显示当天的最长连续超时次数
+
+界面统计从本次启动监控开始累计；日报仅统计本次会话在对应自然日内的探测。
+连续运行跨午夜时会切换日志、日报文件，并重置日报计数，界面的会话计数继续累计。
+目前停止后重新启动监控不会续算之前的日报，同一天的日报会被新会话更新；异常日志始终追加保留。
 
 ### GUI 使用方式
 
@@ -54,23 +58,9 @@ NetSentry 把这个手工流程变成了一个可以长期后台运行的小工�
 - 汇总输出间隔
 - 日报刷新间隔
 
-点击“保存配置”会写入项目根目录下的 `netsentry.json`。
+点击“保存配置”会写入程序当前运行目录下的 `netsentry.json`。
 点击“启动监控”后，界面会实时显示状态、RTT、丢包率和事件日志。
 点击“停止监控”会停止当前监控会话，不需要杀进程。
-
-### 命令行模式
-
-如果你想保留终端方式，也可以显式使用 `-cli`：
-
-```powershell
-go run . -cli
-```
-
-也可以临时覆盖配置文件中的值：
-
-```powershell
-go run . -cli -host 1.1.1.1 -interval 1s -timeout 2s
-```
 
 ### 配置文件示例
 
@@ -95,10 +85,13 @@ cd frontend
 npm.cmd install
 ```
 
-运行测试：
+从项目根目录运行测试（`go:embed` 需要先生成前端资源）：
 
 ```powershell
+npm.cmd --prefix frontend ci
+npm.cmd --prefix frontend run build
 go test ./...
+go vet ./...
 ```
 
 本地开发模式：
@@ -125,7 +118,8 @@ build/bin/NetSentry.exe
 由于它直接使用 Windows ICMP API，所以比反复启动外部 `ping` 进程更轻量。
 
 日报不会在每次探测后都重写。
-默认只会在定时刷新、异常发生、异常恢复和程序退出时更新。
+默认只会在定时刷新、状态变化、跨日和程序退出时更新，连续相同的超时不会每次重写日报。
+如果日志或日报写入失败，界面的 console 会显示错误信息。
 
 ### 开源维护说明
 
@@ -171,10 +165,13 @@ cd frontend
 npm.cmd install
 ```
 
-Run tests:
+From the project root, build the embedded frontend before running tests:
 
 ```powershell
+npm.cmd --prefix frontend ci
+npm.cmd --prefix frontend run build
 go test ./...
+go vet ./...
 ```
 
 Run desktop dev mode:
@@ -194,6 +191,12 @@ The built application is placed at:
 ```text
 build/bin/NetSentry.exe
 ```
+
+UI counters cover the current monitoring session. Reports contain that session's
+samples for each local calendar day and rotate at midnight. Restarting monitoring
+does not restore earlier counters and replaces the same day's report; event logs
+are always appended. Reports refresh on a timer, state changes, day changes, and
+shutdown. File write errors are shown in the UI console.
 
 ## License
 

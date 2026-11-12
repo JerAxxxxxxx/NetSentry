@@ -1,4 +1,5 @@
 import './style.css';
+import './app.css';
 import { EventsOff, EventsOn } from '../wailsjs/runtime/runtime';
 import {
   GetConfig,
@@ -33,7 +34,7 @@ const TEXT = {
   startMonitoring: '\u542f\u52a8\u76d1\u63a7',
   stopMonitoring: '\u505c\u6b62\u76d1\u63a7',
   panelStatus: '\u5b9e\u65f6\u72b6\u6001',
-  panelStatusDesc: '\u8fd9\u91cc\u663e\u793a\u5f53\u524d\u7f51\u7edc\u8d28\u91cf\u548c\u5f53\u5929\u7d2f\u8ba1\u7edf\u8ba1\u3002',
+  panelStatusDesc: '\u8fd9\u91cc\u663e\u793a\u5f53\u524d\u7f51\u7edc\u8d28\u91cf\u548c\u672c\u6b21\u76d1\u63a7\u7d2f\u8ba1\u7edf\u8ba1\u3002',
   metricExplain: '\u8ba1\u6570\u8bf4\u660e\uff1a\u6210\u529f\u8868\u793a\u6536\u5230\u56de\u590d\uff0c\u4e22\u5305\u8868\u793a\u6240\u6709\u5931\u8d25\u63a2\u6d4b\uff0c\u8d85\u65f6\u662f\u5931\u8d25\u4e2d\u7684\u8d85\u65f6\u90e8\u5206\u3002',
   currentStatus: '\u5f53\u524d\u72b6\u6001',
   rttTotal: 'RTT / Total',
@@ -82,7 +83,7 @@ app.innerHTML = `
         </div>
 
         <div class="form-grid">
-          <div class="field">
+          <div class="field field-wide">
             <label for="host">${TEXT.host}</label>
             <input id="host" placeholder="${TEXT.placeholderHost}" />
           </div>
@@ -94,6 +95,10 @@ app.innerHTML = `
             <label for="timeout">${TEXT.timeout}</label>
             <input id="timeout" placeholder="${TEXT.placeholderTimeout}" />
           </div>
+        </div>
+        <details class="advanced">
+          <summary>\u9ad8\u7ea7\u8bbe\u7f6e <span>\u76ee\u5f55\u4e0e\u6c47\u603b\u9891\u7387</span></summary>
+          <div class="form-grid">
           <div class="field field-wide">
             <label for="logDir">${TEXT.logDir}</label>
             <input id="logDir" placeholder="${TEXT.placeholderLogs}" />
@@ -111,6 +116,7 @@ app.innerHTML = `
             <input id="reportEvery" placeholder="${TEXT.placeholder30s}" />
           </div>
         </div>
+        </details>
 
         <div class="button-row action-row">
           <button id="saveBtn" class="ghost">${TEXT.saveConfig}</button>
@@ -119,6 +125,7 @@ app.innerHTML = `
         </div>
       </div>
 
+      <main class="workspace">
       <div class="panel panel-status">
         <div class="panel-head stacked">
           <div>
@@ -162,8 +169,6 @@ app.innerHTML = `
           <button id="openReportsBtn" class="ghost">${TEXT.openReports}</button>
         </div>
       </div>
-    </section>
-
     <section class="panel log-panel">
       <div class="panel-head">
         <div>
@@ -172,7 +177,10 @@ app.innerHTML = `
         </div>
         <span id="lastEventHint">${TEXT.waitingEvent}</span>
       </div>
-      <textarea id="eventLog" class="event-console" readonly spellcheck="false"></textarea>
+      <textarea id="eventLog" class="event-console" aria-label="${TEXT.panelLog}" placeholder="${TEXT.waitingEvent}" readonly spellcheck="false"></textarea>
+      <div class="console-footer"><span>\u4ec5\u663e\u793a\u6700\u8fd1 500 \u6761\u4e8b\u4ef6</span><span>\u5f02\u5e38\u8bb0\u5f55\u4f1a\u5199\u5165\u65e5\u5fd7\u6587\u4ef6</span></div>
+    </section>
+      </main>
     </section>
   </div>
 `;
@@ -229,6 +237,7 @@ function setForm(cfg) {
 
 function setRunning(running) {
   runState.textContent = running ? TEXT.runStateRunning : TEXT.runStateIdle;
+  runState.classList.toggle('running', running);
   startBtn.disabled = running;
   stopBtn.disabled = !running;
 }
@@ -254,10 +263,18 @@ function updateCountText(payload) {
 }
 
 async function init() {
-  const cfg = await GetConfig();
-  setForm(cfg);
-  setRunning(await IsRunning());
-  setStatus(TEXT.runStateIdle, 'idle');
+  startBtn.disabled = true;
+  stopBtn.disabled = true;
+  try {
+    const cfg = await GetConfig();
+    setForm(cfg);
+    const running = await IsRunning();
+    setRunning(running);
+    setStatus(running ? TEXT.runStateRunning : TEXT.runStateIdle, running ? 'summary' : 'idle');
+  } catch (error) {
+    setRunning(false);
+    appendLog(`[error] ${error}`);
+  }
 }
 
 saveBtn.addEventListener('click', async () => {
@@ -270,12 +287,12 @@ saveBtn.addEventListener('click', async () => {
 });
 
 startBtn.addEventListener('click', async () => {
+  startBtn.disabled = true;
   try {
-    logLines.length = 0;
-    eventLog.value = '';
     await StartMonitoring(cfgFromForm());
     setRunning(true);
   } catch (error) {
+    setRunning(await IsRunning().catch(() => false));
     appendLog(`[error] ${error}`);
   }
 });
@@ -305,13 +322,22 @@ openReportsBtn.addEventListener('click', async () => {
 });
 
 EventsOn('monitor:started', (payload) => {
+  logLines.length = 0;
+  eventLog.value = '';
   setRunning(true);
   reportPath.textContent = payload.reportPath || '-';
+  reportPath.title = reportPath.textContent;
+  latencyText.textContent = '- / -';
+  lossText.textContent = '0.00%';
+  countText.textContent = `${TEXT.success} 0 / ${TEXT.loss} 0 / ${TEXT.timeoutShort} 0`;
+  streakText.textContent = '0';
   setStatus(TEXT.started, 'summary');
   appendLog(TEXT.monitorStarted);
 });
 
 EventsOn('monitor:probe', (payload) => {
+  reportPath.textContent = payload.reportPath || reportPath.textContent;
+  reportPath.title = reportPath.textContent;
   const status = payload.status.toUpperCase();
   const toneMap = {
     OK: 'ok',
@@ -331,6 +357,10 @@ EventsOn('monitor:summary', (payload) => {
   appendLog(payload.summaryLine);
 });
 
+EventsOn('monitor:error', (message) => {
+  appendLog(`[error] ${message}`);
+});
+
 EventsOn('monitor:stopped', (payload) => {
   setRunning(false);
   setStatus(TEXT.stopped, 'idle');
@@ -344,6 +374,7 @@ window.addEventListener('beforeunload', () => {
   EventsOff('monitor:started');
   EventsOff('monitor:probe');
   EventsOff('monitor:summary');
+  EventsOff('monitor:error');
   EventsOff('monitor:stopped');
 });
 

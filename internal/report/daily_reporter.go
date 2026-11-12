@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"netsentry/internal/model"
+	"netsentry/internal/storage"
 )
 
 // DailyReporter rewrites a compact daily snapshot file. The monitor updates it
 // on a timer plus important state transitions to keep disk writes low.
 type DailyReporter struct {
+	dir  string
 	path string
 }
 
@@ -24,16 +26,24 @@ func NewDailyReporter(dir string) (*DailyReporter, error) {
 		return nil, err
 	}
 	_ = file.Close()
-	return &DailyReporter{path: path}, nil
+	return &DailyReporter{dir: dir, path: path}, nil
 }
 
 func (r *DailyReporter) Path() string {
 	return r.path
 }
 
-func (r *DailyReporter) Write(stats model.MonitorStats) {
+func (r *DailyReporter) Write(stats model.MonitorStats) error {
+	if stats.LastProbe.IsZero() {
+		return nil
+	}
+	path := filepath.Join(r.dir, fmt.Sprintf("netsentry-report-%s.txt", stats.LastProbe.In(time.Local).Format("20060102")))
 	content := buildDailyReport(stats)
-	_ = os.WriteFile(r.path, []byte(content), 0o644)
+	if err := storage.WriteFile(path, []byte(content)); err != nil {
+		return err
+	}
+	r.path = path
+	return nil
 }
 
 func buildDailyReport(stats model.MonitorStats) string {
@@ -68,10 +78,14 @@ func buildDailyReport(stats model.MonitorStats) string {
 	if len(ips) > 0 {
 		resolvedIPs = strings.Join(ips, ", ")
 	}
+	date := time.Now()
+	if !stats.LastProbe.IsZero() {
+		date = stats.LastProbe
+	}
 
 	return fmt.Sprintf(
 		"NetSentry Daily Report\n\nDate: %s\nUpdated: %s\nHost: %s\nResolved IPs: %s\nFirst Probe: %s\nLast Probe: %s\n\nTotal Probes: %d\nSuccessful Replies: %d\nTimeouts: %d\nUnreachable: %d\nErrors: %d\nLoss Rate: %.2f%%\nAverage RTT: %dms\nMaximum RTT: %dms\nMaximum Consecutive Timeouts: %d\nLast Issue: %s\n",
-		time.Now().Format("2006-01-02"),
+		date.In(time.Local).Format("2006-01-02"),
 		now,
 		stats.Host,
 		resolvedIPs,
