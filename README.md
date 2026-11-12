@@ -48,6 +48,15 @@ NetSentry 把这个手工流程变成了一个可以长期后台运行的小工�
 
 ### GUI 使用方式
 
+#### 下载安装
+
+在 GitHub 仓库的 **Releases** 页面下载 `NetSentry-windows-amd64.exe`，放到有写入权限的文件夹后双击即可运行（Windows 10/11 x64）。
+不需要安装 Go、Node.js 或另行下载前端文件；界面资源已内置在 exe 中。
+程序需要 Microsoft WebView2 Runtime。如果未安装，程序会提示联网下载安装，详见 [Wails 的运行时说明](https://v2.wails.io/docs/guides/windows/)。
+配置、日志和日报在运行时生成，无需随 exe 一起下载；不要放到只读目录。
+当前 exe 未进行代码签名，Windows 可能显示发布者未知或 SmartScreen 提示，请确认来源是本仓库的 Release。
+附件 `SHA256SUMS.txt` 用于校验下载文件，`LICENSE` 为开源许可证。
+
 启动桌面程序后，你可以在界面里修改：
 
 - 目标主机
@@ -121,6 +130,23 @@ build/bin/NetSentry.exe
 默认只会在定时刷新、状态变化、跨日和程序退出时更新，连续相同的超时不会每次重写日报。
 如果日志或日报写入失败，界面的 console 会显示错误信息。
 
+### 自动发布 Windows 版本
+
+普通推送到 `main` / `master` 或创建 PR 仍然只运行测试；推送以 `v` 开头的标签会触发 `Windows Release` 工作流。
+它会先构建前端、运行 Go 测试和静态检查，再生成 Windows x64 exe，最后创建 GitHub Release 并附上 exe、许可证和 SHA-256 校验文件。
+构建使用与 `go.mod` 相同版本的 Wails CLI，不需要手工上传 exe，也不需要额外配置个人访问令牌。
+
+先提交并推送准备发布的代码（必须包含发布工作流），再从该提交创建一个尚未使用的版本标签，例如：
+
+```powershell
+git tag -a v1.0.0 -m "NetSentry v1.0.0"
+git push origin v1.0.0
+```
+
+在 GitHub 的 **Actions** 页面查看进度，成功后到 **Releases** 下载附件。
+`v1.0.0` 这样的标签发布正式版；含连字符的标签（例如 `v1.1.0-beta.1`）发布预发布版，不标记为 Latest。
+以后发布请使用新的版本号，不要移动已发布标签。工作流不会覆盖已有 Release；测试或构建失败不会进入发布步骤。
+
 ### 开源维护说明
 
 - 当前桌面界面采用 Wails，前后端职责更清晰
@@ -155,6 +181,16 @@ It continuously probes a target host, records packet loss and recovery events, a
 - `internal/logging`: issue and recovery event logs
 - `internal/report`: daily report generation
 - `internal/model`: shared types and statistics
+
+### Download and Run
+
+Download `NetSentry-windows-amd64.exe` from this repository's **Releases** page and
+double-click it in a writable folder on Windows 10/11 x64. Go and Node.js are not
+required; frontend assets are embedded. Microsoft WebView2 Runtime is required;
+the app offers an online installation if it is missing. The executable is not
+code-signed, so Windows may show an unknown-publisher or SmartScreen warning.
+Configuration, logs and reports are generated at runtime. Release assets also
+include `LICENSE` and `SHA256SUMS.txt`.
 
 ### Development
 
@@ -197,6 +233,16 @@ samples for each local calendar day and rotate at midnight. Restarting monitorin
 does not restore earlier counters and replaces the same day's report; event logs
 are always appended. Reports refresh on a timer, state changes, day changes, and
 shutdown. File write errors are shown in the UI console.
+
+### Release Automation
+
+Push a new version tag such as `v1.0.0` to run the **Windows Release** workflow.
+It builds the frontend, runs Go tests and static checks, builds the Windows x64
+executable with the Wails version from `go.mod`, and publishes the executable,
+license and checksums to GitHub Releases. Ordinary branch pushes do not publish.
+Tags containing a hyphen (such as `v1.1.0-beta.1`) are marked as prereleases.
+Commit and push the workflow before tagging; use a new tag for each release.
+Existing releases are not overwritten. No personal access token is required.
 
 ## License
 

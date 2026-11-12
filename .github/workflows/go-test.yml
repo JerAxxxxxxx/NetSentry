@@ -42,3 +42,7 @@ jobs:
 
       - name: Run tests
         run: go test ./...
+
+      - name: Test release packaging
+        shell: pwsh
+        run: ./scripts/test-package-release.ps1
